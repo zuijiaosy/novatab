@@ -33,27 +33,29 @@
 
 ## 📸 界面预览
 
-| 主界面（国内常用站点） | 深色主题 |
+> 部分为真实浏览器实拍（标注「实拍」），在线壁纸为 [Wallhaven](https://wallhaven.cc) 实时获取。
+
+| 主界面（国内常用站点） | 深色主题（夜空壁纸） |
 | :---: | :---: |
 | <img src="docs/images/01-home.png" width="420"> | <img src="docs/images/02-dark.png" width="420"> |
 
-| 多引擎搜索 | 文件夹 |
+| 在线高清壁纸 · 实拍 | 设置 · 天气 / 外观 / 数据 · 实拍 |
 | :---: | :---: |
-| <img src="docs/images/03-search-engines.png" width="420"> | <img src="docs/images/04-folder.png" width="420"> |
+| <img src="docs/images/11-live-wallpaper.png" width="420"> | <img src="docs/images/12-live-settings.png" width="420"> |
 
-| 添加网站（自动获取图标） | 在线高清壁纸 |
+| 文件夹 | 添加网站（自动获取并缓存图标） |
 | :---: | :---: |
-| <img src="docs/images/05-add-site.png" width="420"> | <img src="docs/images/08-online-wallpaper.png" width="420"> |
+| <img src="docs/images/04-folder.png" width="420"> | <img src="docs/images/05-add-site.png" width="420"> |
 
-| 设置 · 主题与壁纸 | 设置 · 天气与数据文件 |
+| 设置 · 主题与壁纸 | 在线高清壁纸（清爽山景） |
 | :---: | :---: |
-| <img src="docs/images/06-settings.png" width="420"> | <img src="docs/images/07-settings-data.png" width="420"> |
+| <img src="docs/images/06-settings.png" width="420"> | <img src="docs/images/08-online-wallpaper.png" width="420"> |
 
 <div align="center">
 
-**首次安装 · 数据文件绑定引导**
+**首次安装 · 数据文件绑定引导（实拍）**
 
-<img src="docs/images/09-first-run.png" width="560">
+<img src="docs/images/10-live-home.png" width="560">
 
 </div>
 
