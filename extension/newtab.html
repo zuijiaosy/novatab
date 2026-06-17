@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>新格 · 新标签页</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="wallpaper"></div>
+  <div id="scrim"></div>
+
+  <div class="app">
+    <!-- 主舞台 -->
+    <main class="stage">
+      <div class="topbar">
+        <div class="chip" id="weatherChip" title="点击刷新天气">
+          <span id="weatherIco"></span>
+          <span class="weather-temp" id="weatherTemp">--°</span>
+          <span class="weather-meta"><span id="weatherDesc">天气</span><small id="weatherCity">北京</small></span>
+        </div>
+        <button class="chip icon-btn" id="themeToggle" title="切换主题"><span id="themeIcon"></span></button>
+      </div>
+
+      <!-- 首页视图 -->
+      <div class="content" id="homeView">
+        <header class="hero">
+          <p class="greeting" id="greeting">下午好</p>
+          <div class="clock" id="clock">00:00</div>
+          <div class="date-line" id="dateLine"></div>
+        </header>
+
+        <div class="searchwrap">
+          <div class="search">
+            <button class="engine-btn" id="engineBtn">
+              <span class="engine-glyph" id="engineGlyph">G</span>
+              <span class="caret">▾</span>
+            </button>
+            <input type="text" id="searchInput" placeholder="输入搜索内容　·　按 / 快速聚焦" autocomplete="off">
+            <button class="go" id="searchGo"></button>
+          </div>
+          <div class="engine-menu" id="engineMenu"></div>
+          <div class="suggest-menu" id="suggestMenu"></div>
+        </div>
+
+        <!-- 图标网格 -->
+        <section id="gridWrap" style="width:100%; display:flex; justify-content:center;">
+          <div class="grid" id="grid"></div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <!-- 左下角设置按钮 -->
+  <button class="fab-settings" id="settingsBtn" title="设置"><span id="settingsIco"></span></button>
+
+  <!-- 上下文菜单 -->
+  <div class="ctx-menu" id="ctxMenu"></div>
+
+  <!-- 网站 增/改 模态 -->
+  <div class="overlay" id="siteOverlay">
+    <div class="modal">
+      <h3 id="siteModalTitle">添加网站</h3>
+      <div class="preview-row">
+        <div class="pv" id="sitePreview"><span class="mono">?</span></div>
+        <div style="display:flex; flex-direction:column; gap:8px; flex:1;">
+          <button class="btn ghost" id="autoIconBtn">自动获取网站图标</button>
+          <button class="btn ghost" id="iconUploadBtn">上传自定义图标</button>
+        </div>
+        <input type="file" id="iconFile" accept="image/*" hidden>
+      </div>
+      <div class="field">
+        <label>名称</label>
+        <input type="text" id="fName" placeholder="例如：GitHub">
+      </div>
+      <div class="field">
+        <label>网址</label>
+        <input type="text" id="fUrl" placeholder="例如：github.com">
+      </div>
+      <div class="field">
+        <label>图标颜色</label>
+        <div class="swatches" id="swatches"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="siteCancel">取消</button>
+        <button class="btn primary" id="siteSave">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 文件夹弹层 -->
+  <div class="overlay" id="folderOverlay">
+    <div class="modal folder-modal">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <input type="text" class="ftitle" id="folderTitle" value="文件夹">
+        <button class="x-btn" id="closeFolder"><span id="closeFolderIco"></span></button>
+      </div>
+      <div class="folder-grid" id="folderGrid"></div>
+    </div>
+  </div>
+
+  <!-- 通用 确认 / 输入 模态 -->
+  <div class="overlay" id="promptOverlay">
+    <div class="modal">
+      <h3 id="promptTitle">提示</h3>
+      <p class="modal-msg" id="promptMsg" style="display:none;"></p>
+      <div class="field" id="promptField" style="display:none; margin-top:14px;">
+        <input type="text" id="promptInput">
+      </div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="promptCancel">取消</button>
+        <button class="btn primary" id="promptOk">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设置面板 -->
+  <aside class="settings-panel" id="settingsPanel">
+    <div class="settings-head">
+      <h2>设置</h2>
+      <button class="x-btn" id="closeSettings"><span id="closeSettingsIco"></span></button>
+    </div>
+    <div class="settings-body">
+      <div class="set-section">
+        <div class="set-title">主题</div>
+        <div class="seg" id="themeSeg">
+          <button data-v="light">浅色</button>
+          <button data-v="dark">深色</button>
+          <button data-v="auto">跟随系统</button>
+        </div>
+      </div>
+
+      <div class="set-section">
+        <div class="set-title">壁纸</div>
+        <div class="wp-grid" id="wpGrid"></div>
+        <input type="file" id="wpFile" accept="image/*" hidden>
+
+        <div class="toggle-row" style="margin-top:16px; margin-bottom:12px;">
+          <span class="t-label">在线高清壁纸</span>
+          <label class="switch"><input type="checkbox" id="onlineWpToggle"><span class="slot"></span><span class="knob"></span></label>
+        </div>
+        <div id="onlineWpOpts" style="display:none;">
+          <div class="opt-row">
+            <label>壁纸风格</label>
+            <select class="sel" id="wpStyleSel"></select>
+          </div>
+          <div class="toggle-row" style="margin:12px 0;">
+            <span class="t-label">自动更换</span>
+            <label class="switch"><input type="checkbox" id="wpAutoToggle"><span class="slot"></span><span class="knob"></span></label>
+          </div>
+          <div class="opt-row" id="wpIntervalRow">
+            <label>更换频率</label>
+            <select class="sel" id="wpIntervalSel"></select>
+          </div>
+          <button class="btn ghost full" id="wpChangeNow" style="margin-top:12px;">立即换一张</button>
+        </div>
+      </div>
+
+      <div class="set-section">
+        <div class="set-title">默认搜索引擎</div>
+        <select class="sel" id="engineSel"></select>
+      </div>
+
+      <div class="set-section">
+        <div class="set-title">天气</div>
+        <div class="toggle-row" style="margin-bottom:14px;">
+          <span class="t-label">显示实时天气</span>
+          <label class="switch"><input type="checkbox" id="weatherToggle"><span class="slot"></span><span class="knob"></span></label>
+        </div>
+        <div class="toggle-row" style="margin-bottom:14px;">
+          <span class="t-label">自动定位（使用浏览器定位服务）</span>
+          <label class="switch"><input type="checkbox" id="autoLocateToggle"><span class="slot"></span><span class="knob"></span></label>
+        </div>
+        <div class="city-row">
+          <input type="text" id="cityInput" placeholder="城市，如：北京">
+          <button class="btn primary" id="cityApply">应用</button>
+        </div>
+      </div>
+
+      <div class="set-section">
+        <div class="set-title">外观微调</div>
+        <div class="slider-row">
+          <label>毛玻璃</label>
+          <input type="range" id="blurRange" min="0" max="40" step="1">
+          <span class="val" id="blurVal">22</span>
+        </div>
+        <div class="slider-row">
+          <label>图标圆角</label>
+          <input type="range" id="radiusRange" min="8" max="38" step="1">
+          <span class="val" id="radiusVal">22</span>
+        </div>
+        <div class="slider-row">
+          <label>每行图标</label>
+          <input type="range" id="colsRange" min="4" max="10" step="1">
+          <span class="val" id="colsVal">8</span>
+        </div>
+      </div>
+
+      <div class="set-section">
+        <div class="set-title">数据备份</div>
+        <div class="data-btns">
+          <button class="btn ghost" id="exportBtn"><span class="bico" id="exportIco"></span>导出 JSON</button>
+          <button class="btn ghost" id="importBtn"><span class="bico" id="importIco"></span>导入 JSON</button>
+        </div>
+        <input type="file" id="importFile" accept="application/json,.json" hidden>
+        <button class="btn ghost full" id="resetBtn" style="margin-top:10px;">恢复默认 / 清空自定义</button>
+      </div>
+
+      <div class="set-section">
+        <div class="set-title">数据文件（防丢失 · 跨浏览器）</div>
+        <div id="fileStatus" style="font-size:13px; color:var(--text-dim); line-height:1.6; margin-bottom:10px;"></div>
+        <div class="data-btns">
+          <button class="btn ghost" id="bindFileBtn">绑定数据文件</button>
+          <button class="btn ghost" id="restoreFileBtn">从文件恢复</button>
+        </div>
+        <button class="btn ghost full" id="unbindFileBtn" style="margin-top:10px; display:none;">解绑数据文件</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 首次安装：数据文件绑定引导（右下角通知） -->
+  <div class="notice" id="fileNotice">
+    <div class="notice-title">备份你的数据，换浏览器也不丢</div>
+    <div class="notice-body">
+      绑定一个本地数据文件后，你的网站、文件夹、图标与设置会自动保存到该文件。<br>
+      · 好处：重装插件 / 换浏览器时可一键恢复，数据不丢失。<br>
+      · 说明：仅存于你选择的本地文件，不上传云端；浏览器重启后首次写入可能需再次授权。
+    </div>
+    <div class="notice-actions">
+      <button class="btn ghost" id="fileNoticeLater">暂不</button>
+      <button class="btn primary" id="fileNoticeBind">选择文件并绑定</button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

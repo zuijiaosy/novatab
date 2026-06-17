@@ -1,0 +1,15 @@
+# OMC / 工具状态
+.omc/
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 依赖与构建产物
+node_modules/
+dist/
+*.zip
+
+# 日志与临时
+*.log
+/tmp/
