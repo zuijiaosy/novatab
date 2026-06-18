@@ -334,7 +334,7 @@
   function openUrl(u) {
     if (!u) return;
     if (!/^https?:\/\//.test(u)) u = "https://" + u;
-    window.open(u, "_blank");
+    window.location.href = u; // 在当前新标签页打开，而非新建标签
   }
 
   /* 实时过滤（站内搜索时） */
