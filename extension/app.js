@@ -49,10 +49,48 @@
       return new URL(u).hostname;
     } catch (e) { return ""; }
   }
-  function faviconUrl(url) {
+  // 远程 favicon 服务（仅作兜底，国内网络可能不可达）
+  function remoteFaviconUrl(url) {
     const host = hostOf(url);
     if (!host) return "";
     return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`;
+  }
+  // Chrome 本地 favicon 缓存（零网络、离线可用），需 manifest "favicon" 权限
+  function localFaviconUrl(url) {
+    const host = hostOf(url);
+    if (!host) return "";
+    if (!(window.chrome && chrome.runtime && chrome.runtime.getURL)) return "";
+    return chrome.runtime.getURL("/_favicon/?pageUrl=" + encodeURIComponent("https://" + host + "/") + "&size=64");
+  }
+  // 未收录的站点 Chrome 会返回默认地球图标；取一个必然未收录的域名做指纹，用于识别。
+  // 指纹获取失败不缓存（置空以便下次重试），避免把失败永久记住导致误判。
+  let defaultFavPromise = null;
+  function defaultFavicon() {
+    if (!defaultFavPromise) {
+      defaultFavPromise = urlToDataUrl(localFaviconUrl("https://nonexistent.invalid"))
+        .catch(() => { defaultFavPromise = null; return null; });
+    }
+    return defaultFavPromise;
+  }
+  // 解析站点图标：优先 Chrome 本地缓存，其次远程服务；返回 data URL，之后零网络加载。
+  // 指纹不可用时不信任本地结果（避免把默认地球图标当真实图标存下来），改走远程兜底。
+  async function resolveFavicon(url) {
+    const local = localFaviconUrl(url);
+    if (local) {
+      try {
+        const d = await urlToDataUrl(local);
+        const fp = await defaultFavicon();
+        if (d && fp && d !== fp) return d;
+      } catch (e) {}
+    }
+    try {
+      const d = await urlToDataUrl(remoteFaviconUrl(url));
+      if (d) return d;
+    } catch (e) {}
+    return "";
+  }
+  function isFaviconServiceUrl(u) {
+    return /^https:\/\/www\.google\.com\/s2\/favicons/.test(u) || /^chrome-extension:\/\/[^/]+\/_favicon\//.test(u);
   }
 
   /* ---------- 默认数据 ---------- */
@@ -117,7 +155,11 @@
   let firstRunPending = false;  // 首次安装：预留给“数据文件绑定引导”
   let fileNoticeOpen = false;
   function save() {
-    localStorage.setItem(STORE_KEY, JSON.stringify(state));
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify(state));
+    } catch (e) {
+      toast("保存失败：本地存储空间不足，请更换较小的壁纸或图标");
+    }
     if (fileHandle) { clearTimeout(fileWriteTimer); fileWriteTimer = setTimeout(writeDataFile, 800); }
   }
 
@@ -151,11 +193,13 @@
     { v: 1440, name: "每天" }
   ];
 
+  let wpBlobUrl = "", wpBlobFor = ""; // 在线壁纸的本地缓存（objectURL 及其对应的远程地址）
   function applyWallpaper() {
     const el = $("#wallpaper");
     const o = state.onlineWp;
-    if (o && o.enabled && (o.dataUrl || o.url)) {
-      el.style.background = `center / cover no-repeat url("${o.dataUrl || o.url}")`;
+    if (o && o.enabled && (wpBlobUrl || o.dataUrl || o.url)) {
+      const src = (wpBlobUrl && wpBlobFor === o.url) ? wpBlobUrl : (o.dataUrl || o.url);
+      el.style.background = `center / cover no-repeat url("${src}")`;
       return;
     }
     if (state.wallpaper === "__custom" && state.customWallpaper) {
@@ -185,13 +229,8 @@
       o.url = pick.path; o.dataUrl = ""; o.ts = nowMs(); save();
       applyWallpaper(); // 先用远程地址即时显示
       if (userInitiated) toast("已更换壁纸");
-      // 缓存图片字节为 data URL：之后再次打开新标签直接用缓存，不再请求网络
-      try {
-        const d = await urlToDataUrl(o.url);
-        if (d && state.onlineWp && state.onlineWp.url === o.url) {
-          state.onlineWp.dataUrl = d; save(); applyWallpaper();
-        }
-      } catch (e) { /* 缓存失败则保底用远程地址 */ }
+      // 缓存图片字节到 IndexedDB：之后打开新标签直接用本地缓存，不再请求网络
+      cacheWallpaperBlob(o.url);
     } catch (e) {
       if (userInitiated) toast("壁纸获取失败");
     } finally {
@@ -209,21 +248,42 @@
       }
     }, 60000);
   }
-  function initOnlineWallpaper() {
+  async function cacheWallpaperBlob(url) {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) return;
+      const blob = await r.blob();
+      if (!(state.onlineWp && state.onlineWp.enabled && state.onlineWp.url === url)) return; // 期间已切换，丢弃
+      await kvPut("wallpaper", { url, blob });
+      if (wpBlobUrl) URL.revokeObjectURL(wpBlobUrl);
+      wpBlobUrl = URL.createObjectURL(blob); wpBlobFor = url;
+      applyWallpaper();
+    } catch (e) { /* 缓存失败则保底用远程地址 */ }
+  }
+  async function initOnlineWallpaper() {
+    // 先同步绘制一次（渐变 / 自定义 / 旧 dataUrl / 远程地址），首帧不等 IndexedDB
+    applyWallpaper();
     const o = state.onlineWp;
     if (!o || !o.enabled) return;
-    const due = !o.url || (o.auto && (o.intervalMin === 0 || !o.ts || nowMs() - o.ts >= o.intervalMin * 60000));
-    if (due) {
-      fetchOnlineWallpaper(false);
-    } else {
-      applyWallpaper(); // 未到更换时间：直接用缓存（dataUrl 优先），零网络
-      if (!o.dataUrl && o.url) {
-        // 有地址但还没缓存字节 → 后台补缓存，供下次直接使用
-        urlToDataUrl(o.url).then(d => {
-          if (d && state.onlineWp && state.onlineWp.url === o.url) { state.onlineWp.dataUrl = d; save(); applyWallpaper(); }
-        }).catch(() => {});
-      }
+    // 旧版本把壁纸缓存为 data URL 存在 localStorage（易撑爆配额），迁移到 IndexedDB；
+    // 仅在写入成功后才清空旧缓存，迁移失败保留 dataUrl 兜底
+    if (o.dataUrl) {
+      try {
+        const blob = await (await fetch(o.dataUrl)).blob();
+        await kvPut("wallpaper", { url: o.url, blob });
+        o.dataUrl = ""; save();
+      } catch (e) {}
     }
+    try {
+      const rec = await kvGet("wallpaper");
+      if (rec && rec.blob && rec.url === o.url) {
+        wpBlobUrl = URL.createObjectURL(rec.blob); wpBlobFor = rec.url;
+        applyWallpaper(); // 升级为本地缓存，零网络
+      }
+    } catch (e) {}
+    const due = !o.url || (o.auto && (o.intervalMin === 0 || !o.ts || nowMs() - o.ts >= o.intervalMin * 60000));
+    if (due) fetchOnlineWallpaper(false);
+    else if (!wpBlobUrl && o.url) cacheWallpaperBlob(o.url); // 还没缓存字节 → 后台补缓存
     scheduleWallpaper();
   }
 
@@ -237,7 +297,7 @@
 
   /* ---------- 图标渲染 ---------- */
   function iconInner(item, mini) {
-    if (item.icon) return `<img src="${item.icon}" alt="" referrerpolicy="no-referrer">`;
+    if (item.icon) return `<img src="${escapeHtml(item.icon)}" alt="" referrerpolicy="no-referrer" loading="lazy">`;
     const cls = mini ? "mm" : "mono";
     return `<span class="${cls}">${monoOf(item.name)}</span>`;
   }
@@ -281,12 +341,22 @@
     if (iconCacheRunning) return;
     const all = [];
     state.items.forEach(it => { all.push(it); if (it.type === "folder") (it.children || []).forEach(c => all.push(c)); });
-    const remote = all.filter(it => it.icon && /^https?:/.test(it.icon));
+    const remote = all.filter(it => it.icon && (/^https?:/.test(it.icon) || isFaviconServiceUrl(it.icon)));
     if (!remote.length) return;
     iconCacheRunning = true;
     let changed = false;
     for (const it of remote) {
-      try { const d = await urlToDataUrl(it.icon); if (d) { it.icon = d; changed = true; } } catch (e) { /* 跳过 */ }
+      try {
+        let d = "";
+        if (isFaviconServiceUrl(it.icon)) {
+          // favicon 服务地址（含旧版残留的远程/本地地址）→ 重新解析为 data URL
+          if (it.url) d = await resolveFavicon(it.url);
+        } else {
+          // 用户自定义的远程图片：抓取图片本身，绝不替换成站点 favicon
+          try { d = await urlToDataUrl(it.icon); } catch (e) {}
+        }
+        if (d) { it.icon = d; changed = true; }
+      } catch (e) { /* 跳过 */ }
     }
     iconCacheRunning = false;
     if (changed) { save(); renderGrid(); if (openFolderId) renderFolderGrid(); }
@@ -367,7 +437,7 @@
     if (!suggestItems.length) { menu.classList.remove("open"); return; }
     menu.innerHTML = suggestItems.map((it, i) => {
       const dot = it.icon
-        ? `<img src="${it.icon}" alt="" referrerpolicy="no-referrer" style="width:16px;height:16px;border-radius:4px;object-fit:cover">`
+        ? `<img src="${escapeHtml(it.icon)}" alt="" referrerpolicy="no-referrer" style="width:16px;height:16px;border-radius:4px;object-fit:cover">`
         : `<span style="width:14px;height:14px;border-radius:4px;background:${it.color};display:inline-block"></span>`;
       return `<button class="suggest-opt" data-i="${i}"><span class="s-ico">${dot}</span>${escapeHtml(it.name)}
         <span style="margin-left:auto;font-size:12px;color:var(--text-dim)">${escapeHtml(hostOf(it.url))}</span></button>`;
@@ -677,7 +747,7 @@
   function updateSitePreview() {
     const name = $("#fName").value || "?";
     const pv = $("#sitePreview");
-    if (customIcon) { pv.style.background = "#fff"; pv.innerHTML = `<img src="${customIcon}" alt="" referrerpolicy="no-referrer">`; }
+    if (customIcon) { pv.style.background = "#fff"; pv.innerHTML = `<img src="${escapeHtml(customIcon)}" alt="" referrerpolicy="no-referrer">`; }
     else { pv.style.background = selectedColor; pv.innerHTML = `<span class="mono">${monoOf(name)}</span>`; }
   }
   async function autoFavicon() {
@@ -685,23 +755,25 @@
     const url = $("#fUrl").value.trim();
     const host = hostOf(url);
     if (!host) return;
-    const favUrl = faviconUrl(url);
-    // 先用远程地址即时预览
-    customIcon = favUrl;
+    // 先用本地 favicon 地址即时预览
+    customIcon = localFaviconUrl(url) || remoteFaviconUrl(url);
     renderSwatches();
     updateSitePreview();
-    // 再尝试抓取为内嵌 data URL —— 这样图标数据会随导出一并保存，且离线可用
+    // 解析为内嵌 data URL —— 随数据持久保存、随导出携带，之后零网络加载
     try {
-      const dataUrl = await urlToDataUrl(favUrl);
+      const dataUrl = await resolveFavicon(url);
       if (dataUrl && $("#fUrl").value.trim() === url) {
         customIcon = dataUrl;
         renderSwatches();
         updateSitePreview();
       }
-    } catch (e) { /* 抓取失败则保底使用远程地址 */ }
+    } catch (e) { /* 解析失败则保底使用预览地址 */ }
   }
   async function urlToDataUrl(u) {
-    const r = await fetch(u);
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    let r;
+    try { r = await fetch(u, { signal: ctrl.signal }); } finally { clearTimeout(t); }
     if (!r.ok) return null;
     const blob = await r.blob();
     return await new Promise((res, rej) => {
@@ -716,7 +788,9 @@
     let url = $("#fUrl").value.trim();
     if (!name) { toast("请输入名称"); return; }
     if (url && !/^https?:\/\//.test(url)) url = "https://" + url;
-    const data = { name, url, color: selectedColor, icon: customIcon };
+    // _favicon 预览地址不落库：解析未完成/失败时保存会把「默认地球」永久化，且换浏览器后地址失效
+    const icon = /^chrome-extension:/.test(customIcon) ? "" : customIcon;
+    const data = { name, url, color: selectedColor, icon };
     if (editCtx.id) {
       const found = findItem(editCtx.id);
       if (found.item) Object.assign(found.item, data);
@@ -1008,13 +1082,41 @@
   }
 
   /* ---------- 本地数据文件（File System Access：防丢失 / 跨浏览器） ---------- */
-  const FS_DB = "wetab_fs", FS_STORE = "handles", FS_KEY = "dataFile";
+  const FS_DB = "wetab_fs", FS_STORE = "handles", FS_KEY = "dataFile", KV_STORE = "kv";
   function fsOpen() {
     return new Promise((res, rej) => {
-      const r = indexedDB.open(FS_DB, 1);
-      r.onupgradeneeded = () => r.result.createObjectStore(FS_STORE);
-      r.onsuccess = () => res(r.result);
+      const r = indexedDB.open(FS_DB, 2);
+      r.onupgradeneeded = () => {
+        const db = r.result;
+        if (!db.objectStoreNames.contains(FS_STORE)) db.createObjectStore(FS_STORE);
+        if (!db.objectStoreNames.contains(KV_STORE)) db.createObjectStore(KV_STORE);
+      };
+      r.onsuccess = () => {
+        const db = r.result;
+        // 其他页面请求升级版本时主动让出连接，避免它们的 open 永久阻塞
+        db.onversionchange = () => { try { db.close(); } catch (e) {} };
+        res(db);
+      };
       r.onerror = () => rej(r.error);
+      // 被旧版本页面的连接阻塞时立即失败，调用方走兜底逻辑，不能永久挂起
+      r.onblocked = () => rej(new Error("indexedDB blocked"));
+    });
+  }
+  /* 大体积二进制缓存（如壁纸图片）走 IndexedDB，避免占用 localStorage 配额 */
+  async function kvPut(key, v) {
+    const db = await fsOpen();
+    return new Promise((res, rej) => {
+      const tx = db.transaction(KV_STORE, "readwrite");
+      tx.objectStore(KV_STORE).put(v, key);
+      tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error);
+    });
+  }
+  async function kvGet(key) {
+    const db = await fsOpen();
+    return new Promise((res, rej) => {
+      const tx = db.transaction(KV_STORE, "readonly");
+      const rq = tx.objectStore(KV_STORE).get(key);
+      rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error);
     });
   }
   async function fsPut(v) {
@@ -1041,18 +1143,26 @@
       tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error);
     });
   }
-  async function fsEnsurePermission(h, write) {
+  // interactive=true 时才会弹出授权框（仅用于用户主动点击的场景）；
+  // 自动保存一律 interactive=false，只在「已授权」时静默写入，绝不打扰用户。
+  async function fsEnsurePermission(h, write, interactive) {
     const opts = { mode: write ? "readwrite" : "read" };
     try {
       if ((await h.queryPermission(opts)) === "granted") return true;
-      if ((await h.requestPermission(opts)) === "granted") return true;
+      if (interactive && (await h.requestPermission(opts)) === "granted") return true;
     } catch (e) {}
     return false;
   }
+  let syncSkipNotified = false;
   async function writeDataFile() {
     if (!fileHandle) return;
     try {
-      if (!(await fsEnsurePermission(fileHandle, true))) return;
+      // 静默：仅在已授权时写入，未授权则跳过（localStorage 仍是主存，数据不丢），不弹窗；
+      // 但每个页面提示一次，避免用户长期不知道备份文件已停更
+      if (!(await fsEnsurePermission(fileHandle, true, false))) {
+        if (!syncSkipNotified) { syncSkipNotified = true; toast("数据文件自动同步已暂停，可到设置中一键恢复"); }
+        return;
+      }
       const w = await fileHandle.createWritable();
       await w.write(JSON.stringify(state, null, 2));
       await w.close();
@@ -1077,7 +1187,9 @@
       const [h] = await window.showOpenFilePicker({
         types: [{ description: "WeTab 数据", accept: { "application/json": [".json"] } }]
       });
-      if (!(await fsEnsurePermission(h, false))) { toast("未授权读取该文件"); return; }
+      // 优先申请读写（恢复后可继续自动同步）；被拒时退化为只读恢复，不能因此拒绝找回数据
+      const writable = await fsEnsurePermission(h, true, true);
+      if (!writable && !(await fsEnsurePermission(h, false, true))) { toast("未授权读取该文件"); return; }
       const f = await h.getFile();
       const data = JSON.parse(await f.text());
       if (!data || !Array.isArray(data.items)) throw new Error("文件格式不正确");
@@ -1094,6 +1206,13 @@
   async function unbindDataFile() {
     fileHandle = null; await fsDel(); renderFileStatus(); toast("已解绑数据文件");
   }
+  // 用户主动点击：弹一次授权框，本会话内此后自动同步全程静默
+  async function resumeSync() {
+    if (!fileHandle) return;
+    const ok = await fsEnsurePermission(fileHandle, true, true);
+    if (ok) { await writeDataFile(); toast("已恢复自动同步"); } else { toast("未授权，暂不同步到文件"); }
+    renderFileStatus();
+  }
   // 启动时尝试恢复句柄（仅恢复绑定关系，不强行读取，避免覆盖本地最新数据）
   async function restoreFileHandle() {
     try {
@@ -1101,15 +1220,22 @@
       if (h) { fileHandle = h; renderFileStatus(); }
     } catch (e) {}
   }
-  function renderFileStatus() {
+  async function renderFileStatus() {
     const el = $("#fileStatus"); if (!el) return;
     const unbind = $("#unbindFileBtn");
+    const resume = $("#resumeSyncBtn");
     if (fileHandle) {
-      el.textContent = "已绑定：" + (fileHandle.name || "本地文件") + "（更改自动写入）";
+      let granted = false;
+      try { granted = (await fileHandle.queryPermission({ mode: "readwrite" })) === "granted"; } catch (e) {}
+      el.textContent = granted
+        ? "已绑定：" + (fileHandle.name || "本地文件") + "（更改自动同步，无需再确认）"
+        : "已绑定：" + (fileHandle.name || "本地文件") + "（浏览器重启后需点下方「恢复自动同步」授权一次）";
       if (unbind) unbind.style.display = "";
+      if (resume) resume.style.display = granted ? "none" : "";
     } else {
       el.textContent = "未绑定。绑定后所有数据会自动写入你选择的本地文件，换浏览器或重装插件可用「从文件恢复」找回。";
       if (unbind) unbind.style.display = "none";
+      if (resume) resume.style.display = "none";
     }
   }
   // 首次安装的数据文件绑定引导（右下角通知）
@@ -1158,11 +1284,12 @@
     $("#exportIco").innerHTML = ICON.download;
     $("#importIco").innerHTML = ICON.upload;
 
-    applyTheme(); applyWallpaper(); applyVars();
-    initOnlineWallpaper();
+    applyTheme(); applyVars();
+    initOnlineWallpaper(); // 内部按需 applyWallpaper：本地缓存优先，零网络
     renderGrid(); renderEngine();
     cacheRemoteIcons(); // 后台把远程图标缓存为本地 data URL
     tick(); setInterval(tick, 1000);
+    setTimeout(() => $("#searchInput").focus(), 80); // 打开即可直接输入搜索
     // 首次安装：预留首屏给“数据文件绑定”引导，避免与定位询问叠加
     firstRunPending = !state.filePrompted && !!window.showSaveFilePicker;
     fetchWeather(false);
@@ -1210,7 +1337,7 @@
       showBackgroundMenu(e);
     });
     $("#iconUploadBtn").onclick = () => $("#iconFile").click();
-    $("#iconFile").onchange = (e) => readImage(e.target.files[0], (d) => { customIcon = d; renderSwatches(); updateSitePreview(); });
+    $("#iconFile").onchange = (e) => readImage(e.target.files[0], (d) => { customIcon = d; renderSwatches(); updateSitePreview(); }, 256);
     $("#siteOverlay").onclick = (e) => { if (e.target.id === "siteOverlay") $("#siteOverlay").classList.remove("open"); };
 
     // 文件夹
@@ -1219,6 +1346,7 @@
       const f = state.items.find(i => i.id === openFolderId);
       if (f && $("#folderTitle").value.trim()) { f.name = $("#folderTitle").value.trim(); save(); renderGrid(); }
     });
+    $("#folderTitle").addEventListener("keydown", e => { if (e.key === "Enter") e.target.blur(); });
     $("#folderOverlay").onclick = (e) => { if (e.target.id === "folderOverlay") closeFolder(); };
 
     // 通用弹窗
@@ -1240,7 +1368,7 @@
       state.customWallpaper = d; state.wallpaper = "__custom";
       if (state.onlineWp) state.onlineWp.enabled = false; scheduleWallpaper();
       save(); applyWallpaper(); renderSettings();
-    });
+    }, 2560);
     // 在线壁纸控制
     $("#onlineWpToggle").onchange = (e) => {
       state.onlineWp.enabled = e.target.checked; save();
@@ -1288,6 +1416,7 @@
     $("#bindFileBtn").onclick = bindDataFile;
     $("#restoreFileBtn").onclick = restoreFromFile;
     $("#unbindFileBtn").onclick = unbindDataFile;
+    $("#resumeSyncBtn").onclick = resumeSync;
     $("#fileNoticeBind").onclick = async () => { dismissFileNotice(); await bindDataFile(); };
     $("#fileNoticeLater").onclick = dismissFileNotice;
     restoreFileHandle();
@@ -1328,12 +1457,43 @@
       if (e.key === "/" && document.activeElement.tagName !== "INPUT") { e.preventDefault(); $("#searchInput").focus(); }
     });
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (state.theme === "auto") applyTheme(); });
+    // 跨标签页同步：别的新标签页改了数据，本页立即跟随，避免旧内存态互相覆盖
+    window.addEventListener("storage", (e) => {
+      if (e.key !== STORE_KEY || e.newValue == null) return;
+      try { state = Object.assign(defaultState(), JSON.parse(e.newValue)); } catch (err) { return; }
+      applyTheme(); applyWallpaper(); applyVars();
+      renderGrid(); renderEngine(); paintWeather();
+      scheduleWallpaper(); // 壁纸自动更换的开关/频率可能已被其他页修改
+      if (openFolderId) refreshFolderOrClose();
+      if ($("#settingsPanel").classList.contains("open")) renderSettings(); // 设置面板同步显示新值
+    });
   }
 
-  function readImage(file, cb) {
+  // 读取图片；传 maxSide 时按最长边缩放压缩，避免大图撑爆 localStorage 配额
+  function readImage(file, cb, maxSide) {
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => cb(reader.result);
+    reader.onload = () => {
+      if (!maxSide) { cb(reader.result); return; }
+      // GIF 重绘会丢动画，4MB 内直接透传
+      if (file.type === "image/gif" && file.size <= 4 * 1024 * 1024) { cb(reader.result); return; }
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+        if (scale >= 1 && file.size <= 1024 * 1024) { cb(reader.result); return; }
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        // JPEG 源保持 JPEG；其余（PNG/WebP/GIF 超限）用 WebP —— 保留透明通道且体积小
+        const out = file.type === "image/jpeg"
+          ? canvas.toDataURL("image/jpeg", 0.85)
+          : canvas.toDataURL("image/webp", 0.9);
+        cb(out);
+      };
+      img.onerror = () => cb(reader.result);
+      img.src = reader.result;
+    };
     reader.readAsDataURL(file);
   }
 
