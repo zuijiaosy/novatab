@@ -134,3 +134,7 @@ novatab/
 ## 📄 许可证
 
 [MIT](LICENSE) © 2026 NovaTab Contributors
+
+## 友情链接
+
+- [LINUX DO - 新的理想型社区](https://linux.do/)
