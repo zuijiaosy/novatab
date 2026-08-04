@@ -137,6 +137,7 @@
       showWeather: true,
       autoLocate: true,
       weatherCache: null, // { city, temp, code, ts, auto }
+      searchHistory: [],  // 最近搜索关键词，最新在前
       onlineWp: { enabled: false, style: "nature", auto: true, intervalMin: 60, url: "", dataUrl: "", ts: 0 }
     };
   }
@@ -386,6 +387,8 @@
   function doSearch() {
     const q = $("#searchInput").value.trim();
     if (!q) return;
+    addHistory(q);
+    closeSuggest();
     if (state.engine === "site") {
       const flat = flatten();
       const hit = flat.find(i => i.name.toLowerCase().includes(q.toLowerCase()));
@@ -424,28 +427,91 @@
     });
   }
 
-  /* ---------- 搜索联想（本地快捷方式） ---------- */
+  /* ---------- 搜索历史 ---------- */
+  const HISTORY_MAX = 30;   // 最多保留的历史条数
+  const HISTORY_SHOW = 8;   // 下拉里最多展示的历史条数
+  function addHistory(q) {
+    q = (q || "").trim();
+    if (!q) return;
+    if (!Array.isArray(state.searchHistory)) state.searchHistory = [];
+    const list = state.searchHistory;
+    const i = list.indexOf(q);
+    if (i >= 0) list.splice(i, 1);
+    list.unshift(q);
+    if (list.length > HISTORY_MAX) list.length = HISTORY_MAX;
+    save();
+  }
+  function removeHistory(q) {
+    const list = Array.isArray(state.searchHistory) ? state.searchHistory : [];
+    const i = list.indexOf(q);
+    if (i < 0) return;
+    list.splice(i, 1);
+    save();
+  }
+
+  /* ---------- 搜索联想（历史优先，站内引擎下补充快捷方式） ---------- */
   let suggestItems = [];
   let suggestIdx = -1;
+  let suppressAutoSuggest = true; // 页面初次自动聚焦时不弹历史
+  const CLOCK_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v5.2l3.2 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
   function renderSuggest() {
-    const q = $("#searchInput").value.trim().toLowerCase();
+    const q = $("#searchInput").value.trim();
+    const lq = q.toLowerCase();
     const menu = $("#suggestMenu");
-    if (!q) { menu.classList.remove("open"); suggestItems = []; suggestIdx = -1; return; }
-    const flat = flatten().filter(i => i.url);
-    suggestItems = flat.filter(i => i.name.toLowerCase().includes(q) || hostOf(i.url).includes(q)).slice(0, 6);
+    const hist = (Array.isArray(state.searchHistory) ? state.searchHistory : [])
+      .filter(h => !lq || h.toLowerCase().includes(lq))
+      .slice(0, HISTORY_SHOW);
+    suggestItems = hist.map(h => ({ kind: "history", text: h }));
+    // 站内 / 书签模式下才联想快捷方式，其余引擎只看历史
+    if (lq && state.engine === "site") {
+      flatten().filter(i => i.url)
+        .filter(i => i.name.toLowerCase().includes(lq) || hostOf(i.url).includes(lq))
+        .slice(0, 6)
+        .forEach(it => suggestItems.push({ kind: "site", item: it }));
+    }
     suggestIdx = -1;
     if (!suggestItems.length) { menu.classList.remove("open"); return; }
-    menu.innerHTML = suggestItems.map((it, i) => {
+    menu.innerHTML = suggestItems.map((s, i) => {
+      if (s.kind === "history") {
+        return `<button class="suggest-opt" data-i="${i}"><span class="s-ico">${CLOCK_SVG}</span>
+          <span class="s-kw">${escapeHtml(s.text)}</span>
+          <span class="suggest-del" data-del="${i}" title="删除这条记录">✕</span></button>`;
+      }
+      const it = s.item;
       const dot = it.icon
         ? `<img src="${escapeHtml(it.icon)}" alt="" referrerpolicy="no-referrer" style="width:16px;height:16px;border-radius:4px;object-fit:cover">`
         : `<span style="width:14px;height:14px;border-radius:4px;background:${it.color};display:inline-block"></span>`;
-      return `<button class="suggest-opt" data-i="${i}"><span class="s-ico">${dot}</span>${escapeHtml(it.name)}
-        <span style="margin-left:auto;font-size:12px;color:var(--text-dim)">${escapeHtml(hostOf(it.url))}</span></button>`;
+      return `<button class="suggest-opt" data-i="${i}"><span class="s-ico">${dot}</span>
+        <span class="s-kw">${escapeHtml(it.name)}</span>
+        <span style="font-size:12px;color:var(--text-dim)">${escapeHtml(hostOf(it.url))}</span></button>`;
     }).join("");
-    $$(".suggest-opt", menu).forEach(b => b.onmousedown = (e) => { e.preventDefault(); openUrl(suggestItems[+b.dataset.i].url); closeSuggest(); $("#searchInput").value = ""; });
+    $$(".suggest-opt", menu).forEach(b => b.onmousedown = (e) => {
+      e.preventDefault();
+      const del = e.target.closest(".suggest-del");
+      if (del) {
+        const s = suggestItems[+del.dataset.del];
+        if (s) { removeHistory(s.text); renderSuggest(); }
+        return;
+      }
+      pickSuggest(suggestItems[+b.dataset.i]);
+    });
     menu.classList.add("open");
   }
-  function closeSuggest() { $("#suggestMenu").classList.remove("open"); suggestItems = []; suggestIdx = -1; }
+  // 选中一条联想：历史 → 回填并搜索；快捷方式 → 直接打开
+  function pickSuggest(s) {
+    if (!s) return;
+    if (s.kind === "site") { closeSuggest(); $("#searchInput").value = ""; openUrl(s.item.url); return; }
+    $("#searchInput").value = s.text;
+    closeSuggest();
+    doSearch();
+  }
+  function closeSuggest() {
+    const menu = $("#suggestMenu");
+    menu.classList.remove("open");
+    menu.innerHTML = ""; // 同时清掉 DOM，避免隐藏后残留的按钮与已清空的 suggestItems 错位
+    suggestItems = [];
+    suggestIdx = -1;
+  }
   function moveSuggest(dir) {
     if (!suggestItems.length) return;
     suggestIdx = (suggestIdx + dir + suggestItems.length) % suggestItems.length;
@@ -1289,7 +1355,8 @@
     renderGrid(); renderEngine();
     cacheRemoteIcons(); // 后台把远程图标缓存为本地 data URL
     tick(); setInterval(tick, 1000);
-    setTimeout(() => $("#searchInput").focus(), 80); // 打开即可直接输入搜索
+    // 打开即可直接输入搜索；这次自动聚焦不弹历史，避免一开页面就盖住图标
+    setTimeout(() => { $("#searchInput").focus(); suppressAutoSuggest = false; }, 80);
     // 首次安装：预留首屏给“数据文件绑定”引导，避免与定位询问叠加
     firstRunPending = !state.filePrompted && !!window.showSaveFilePicker;
     fetchWeather(false);
@@ -1306,15 +1373,38 @@
     // 搜索
     $("#engineBtn").onclick = (e) => { e.stopPropagation(); $("#engineMenu").classList.toggle("open"); };
     $("#searchGo").onclick = doSearch;
-    $("#searchInput").addEventListener("keydown", e => {
+    // 输入法组合态：拼音选字期间的回车只用于上屏，不能触发搜索。
+    // 部分输入法会先发 compositionend 再发 keydown，此时 isComposing 已是 false，
+    // 故额外用 justComposed 兜住紧随其后的那一次回车（下次 keyup 时清除）。
+    // 鼠标点候选词上屏不会产生 keyup，故再加 200ms 时间窗，避免标志一直挂着。
+    let composing = false, justComposed = false, compEndAt = 0;
+    const si = $("#searchInput");
+    si.addEventListener("compositionstart", () => { composing = true; justComposed = true; });
+    si.addEventListener("compositionend", () => {
+      composing = false; justComposed = true; compEndAt = performance.now(); renderSuggest();
+    });
+    si.addEventListener("keyup", () => { justComposed = false; });
+    si.addEventListener("keydown", e => {
+      if (e.isComposing || composing || e.keyCode === 229) return;
       if (e.key === "Enter") {
-        if (suggestIdx >= 0 && suggestItems[suggestIdx]) { openUrl(suggestItems[suggestIdx].url); closeSuggest(); $("#searchInput").value = ""; }
+        if (justComposed && performance.now() - compEndAt < 200) { justComposed = false; return; }
+        if (suggestIdx >= 0 && suggestItems[suggestIdx]) pickSuggest(suggestItems[suggestIdx]);
         else doSearch();
-      } else if (e.key === "ArrowDown") { e.preventDefault(); moveSuggest(1); }
+      } else if (e.key === "ArrowDown") { e.preventDefault(); if (!suggestItems.length) renderSuggest(); moveSuggest(1); }
       else if (e.key === "ArrowUp") { e.preventDefault(); moveSuggest(-1); }
     });
-    $("#searchInput").addEventListener("input", () => { liveFilter(); renderSuggest(); });
-    $("#searchInput").addEventListener("blur", () => setTimeout(closeSuggest, 150));
+    si.addEventListener("input", () => { liveFilter(); renderSuggest(); });
+    // 聚焦即弹历史；页面已自动聚焦时点击输入框也要能唤出（此时不会再有 focus 事件）
+    let suggestCloseTimer = null;
+    si.addEventListener("focus", () => {
+      clearTimeout(suggestCloseTimer);
+      if (!suppressAutoSuggest) renderSuggest();
+    });
+    si.addEventListener("click", () => {
+      if (!suppressAutoSuggest && !$("#suggestMenu").classList.contains("open")) renderSuggest();
+    });
+    // 延迟关闭是为了让下拉里的 mousedown 先生效；重新聚焦时要撤销它，否则会误关新弹出的菜单
+    si.addEventListener("blur", () => { suggestCloseTimer = setTimeout(closeSuggest, 150); });
 
     // 设置按钮
     $("#settingsBtn").onclick = openSettings;

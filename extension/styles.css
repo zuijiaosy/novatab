@@ -281,7 +281,15 @@ body {
   text-align: left;
 }
 .suggest-opt .s-ico { width: 16px; height: 16px; flex: 0 0 auto; color: var(--text-dim); display: grid; place-items: center; }
+.suggest-opt .s-kw { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .suggest-opt:hover, .suggest-opt.active { background: var(--glass-bg-strong); }
+.suggest-del {
+  flex: 0 0 auto; width: 20px; height: 20px; border-radius: 6px;
+  display: grid; place-items: center; font-size: 12px; line-height: 1;
+  color: var(--text-dim); opacity: 0; transition: opacity .15s, background .15s;
+}
+.suggest-opt:hover .suggest-del, .suggest-opt.active .suggest-del { opacity: .65; }
+.suggest-del:hover { opacity: 1; background: var(--glass-border-soft); }
 
 /* ===== 图标网格 ===== */
 .grid {
