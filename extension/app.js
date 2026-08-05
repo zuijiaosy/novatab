@@ -452,7 +452,6 @@
   /* ---------- 搜索联想（历史优先，站内引擎下补充快捷方式） ---------- */
   let suggestItems = [];
   let suggestIdx = -1;
-  let suppressAutoSuggest = true; // 页面初次自动聚焦时不弹历史
   const CLOCK_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v5.2l3.2 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
   function renderSuggest() {
     const q = $("#searchInput").value.trim();
@@ -1355,8 +1354,7 @@
     renderGrid(); renderEngine();
     cacheRemoteIcons(); // 后台把远程图标缓存为本地 data URL
     tick(); setInterval(tick, 1000);
-    // 打开即可直接输入搜索；这次自动聚焦不弹历史，避免一开页面就盖住图标
-    setTimeout(() => { $("#searchInput").focus(); suppressAutoSuggest = false; }, 80);
+    setTimeout(() => $("#searchInput").focus(), 80); // 打开即可直接输入搜索
     // 首次安装：预留首屏给“数据文件绑定”引导，避免与定位询问叠加
     firstRunPending = !state.filePrompted && !!window.showSaveFilePicker;
     fetchWeather(false);
@@ -1394,14 +1392,12 @@
       else if (e.key === "ArrowUp") { e.preventDefault(); moveSuggest(-1); }
     });
     si.addEventListener("input", () => { liveFilter(); renderSuggest(); });
-    // 聚焦即弹历史；页面已自动聚焦时点击输入框也要能唤出（此时不会再有 focus 事件）
+    // 只认用户真实点击输入框才弹历史。不能用 focus 事件：新标签页焦点默认在地址栏，
+    // 页面首次获得焦点时输入框会补发一次 focus，那会让历史框在点图标时突然弹出挡住图标。
     let suggestCloseTimer = null;
-    si.addEventListener("focus", () => {
-      clearTimeout(suggestCloseTimer);
-      if (!suppressAutoSuggest) renderSuggest();
-    });
+    si.addEventListener("focus", () => clearTimeout(suggestCloseTimer));
     si.addEventListener("click", () => {
-      if (!suppressAutoSuggest && !$("#suggestMenu").classList.contains("open")) renderSuggest();
+      if (!$("#suggestMenu").classList.contains("open")) renderSuggest();
     });
     // 延迟关闭是为了让下拉里的 mousedown 先生效；重新聚焦时要撤销它，否则会误关新弹出的菜单
     si.addEventListener("blur", () => { suggestCloseTimer = setTimeout(closeSuggest, 150); });
@@ -1544,7 +1540,7 @@
         $("#siteOverlay").classList.remove("open"); closeFolder(); closeSettings();
         if (promptResolver) closePrompt(promptResolver.withInput ? null : false);
       }
-      if (e.key === "/" && document.activeElement.tagName !== "INPUT") { e.preventDefault(); $("#searchInput").focus(); }
+      if (e.key === "/" && document.activeElement.tagName !== "INPUT") { e.preventDefault(); $("#searchInput").focus(); renderSuggest(); }
     });
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (state.theme === "auto") applyTheme(); });
     // 跨标签页同步：别的新标签页改了数据，本页立即跟随，避免旧内存态互相覆盖
